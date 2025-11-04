@@ -1,23 +1,20 @@
 import sqlite3
 import customtkinter as ctk
-from tkinter import ttk  # For the Treeview (table)
+from tkinter import ttk
 from tkinter import messagebox
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib
-from datetime import datetime # For logging timestamps
+from datetime import datetime
+import os 
 
-# Tell matplotlib to use the Tkinter backend
 matplotlib.use("TkAgg")
 
-# --- Database Setup ---
 def setup_database():
-    """Creates the database tables and a default admin user."""
     conn = sqlite3.connect('electricity.db')
     cursor = conn.cursor()
     
-    # User table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,18 +25,16 @@ def setup_database():
     )
     ''')
     
-    # Consumption table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS consumption (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
-        month TEXT NOT NULL,  -- e.g., "2025-10"
+        month TEXT NOT NULL,
         usage_kwh REAL NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )
     ''')
     
-    # Action Log Table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS action_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,51 +44,43 @@ def setup_database():
     )
     ''')
     
-    # --- Add default users with PLAIN TEXT passwords ---
     try:
-        # Default Admin: admin / admin123
         cursor.execute(
             "INSERT INTO users (username, password, role, full_name) VALUES (?, ?, ?, ?)",
             ('admin', 'admin123', 'admin', 'Administrator')
         )
     except sqlite3.IntegrityError:
-        pass  # Admin already exists
+        pass 
 
     try:
-        # Sample Client 1: client1 / pass123
         cursor.execute(
             "INSERT INTO users (username, password, role, full_name) VALUES (?, ?, ?, ?)",
             ('client1', 'pass123', 'client', 'John Doe')
         )
         user_id_1 = cursor.lastrowid
-        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_1, '2025-08', 140.0))
+        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_1, '2025-08', 85.0))
         cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_1, '2025-09', 150.5))
-        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_1, '2025-10', 175.2))
+        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_1, '2025-10', 350.2))
 
     except sqlite3.IntegrityError:
-        pass # Client1 already exists
+        pass
         
     try:
-        # Sample Client 2: client2 / pass456
         cursor.execute(
             "INSERT INTO users (username, password, role, full_name) VALUES (?, ?, ?, ?)",
             ('client2', 'pass456', 'client', 'Jane Smith')
         )
         user_id_2 = cursor.lastrowid
-        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_2, '2025-08', 215.0))
         cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_2, '2025-09', 220.0))
-        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_2, '2025-10', 210.8))
+        cursor.execute("INSERT INTO consumption (user_id, month, usage_kwh) VALUES (?, ?, ?)", (user_id_2, '2025-10', 610.8))
 
     except sqlite3.IntegrityError:
-        pass # Client2 already exists
+        pass
 
     conn.commit()
     conn.close()
 
-# --- Utility Functions ---
-
 def db_query(query, params=()):
-    """Helper function to run non-select queries (INSERT, DELETE, UPDATE)."""
     conn = sqlite3.connect('electricity.db')
     cursor = conn.cursor()
     cursor.execute(query, params)
@@ -101,21 +88,51 @@ def db_query(query, params=()):
     conn.close()
 
 def db_query_to_df(query, params=()):
-    """Helper function to run SELECT queries and return a Pandas DataFrame."""
     conn = sqlite3.connect('electricity.db')
     df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     return df
 
 def log_action(actor, action):
-    """Logs an action to the database."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         db_query("INSERT INTO action_log (timestamp, actor, action) VALUES (?, ?, ?)", (now, actor, action))
     except Exception as e:
         print(f"Failed to log action: {e}")
 
-# --- Main Application Class ---
+FIXED_CHARGE_SINGLE_PHASE = 115.00
+WHEELING_CHARGE_PER_KWH = 1.40
+FAC_PER_KWH = 0.00
+ELECTRICITY_DUTY_RATE = 0.16
+slabs = [
+    (100, 3.46), (200, 7.43), (200, 10.32), (500, 11.71), (float('inf'), 11.71)
+]
+    
+def calculate_mahadiscom_bill(kwh_units):
+    bill = {}
+    bill_details = []
+    energy_charge = 0.0
+    remaining_units = kwh_units
+    
+    for slab_limit, rate in slabs:
+        if remaining_units <= 0: break
+        units_in_this_slab = min(remaining_units, slab_limit)
+        slab_cost = units_in_this_slab * rate
+        energy_charge += slab_cost
+        remaining_units -= units_in_this_slab
+        bill_details.append(f"  - {units_in_this_slab:.2f} kWh @ ₹{rate:.2f}/unit = ₹{slab_cost:.2f}")
+
+    bill['A_Energy_Charge'] = energy_charge
+    bill['B_Fixed_Charge'] = FIXED_CHARGE_SINGLE_PHASE
+    bill['C_Wheeling_Charge'] = kwh_units * WHEELING_CHARGE_PER_KWH
+    bill['D_FAC'] = kwh_units * FAC_PER_KWH
+    sub_total = (bill['A_Energy_Charge'] + bill['B_Fixed_Charge'] + 
+                 bill['C_Wheeling_Charge'] + bill['D_FAC'])
+    bill['E_Electricity_Duty'] = sub_total * ELECTRICITY_DUTY_RATE
+    bill['F_Total_Bill'] = sub_total + bill['E_Electricity_Duty']
+    
+    return bill, bill_details
+
 
 class ElectricityPortalApp(ctk.CTk):
     def __init__(self):
@@ -127,6 +144,7 @@ class ElectricityPortalApp(ctk.CTk):
         self.font_normal = ctk.CTkFont(family="Bahnschrift", size=14)
         self.font_bold = ctk.CTkFont(family="Bahnschrift", size=18, weight="bold")
         self.font_bold_large = ctk.CTkFont(family="Bahnschrift", size=24, weight="bold")
+        self.font_title = ctk.CTkFont(family="Bahnschrift", size=28, weight="bold")
         self.font_normal_bold = ctk.CTkFont(family="Bahnschrift", size=14, weight="bold")
         self.font_small = ctk.CTkFont(family="Bahnschrift", size=12)
         
@@ -148,6 +166,10 @@ class ElectricityPortalApp(ctk.CTk):
         self.current_user_id = None
         self.current_user_role = None
         self.current_user_name = None
+
+        title_label = ctk.CTkLabel(self, text="ELECTRICITY DISTRIBUTION PORTAL", 
+                                   font=self.font_title)
+        title_label.pack(side="top", pady=(20, 10))
 
         container = ctk.CTkFrame(self)
         container.pack(side="top", fill="both", expand=True)
@@ -175,7 +197,6 @@ class ElectricityPortalApp(ctk.CTk):
     def logout(self):
         actor = self.current_user_name if self.current_user_name else "Unknown"
         log_action(actor, "Logged out.")
-        
         self.current_user_id = None
         self.current_user_role = None
         self.current_user_name = None
@@ -184,15 +205,11 @@ class ElectricityPortalApp(ctk.CTk):
     def update_chart_styles(self):
         mode = ctk.get_appearance_mode()
         style_dict = self.chart_light_style if mode == "Light" else self.chart_dark_style
-        
         for key, value in style_dict.items():
             plt.rcParams[key] = value
-            
         for frame in self.frames.values():
             if hasattr(frame, 'update_charts'):
                 frame.update_charts()
-
-# --- Login View ---
 
 class LoginView(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -248,14 +265,12 @@ class LoginView(ctk.CTkFrame):
             user = user_df.iloc[0]
             if user['password'] == password:
                 log_action(username, "Logged in successfully.")
-                
                 self.controller.current_user_id = int(user['id'])
                 self.controller.current_user_role = user['role']
                 self.controller.current_user_name = user['full_name']
                 self.password_entry.delete(0, 'end')
                 self.show_pass_check.deselect()
                 self.toggle_password_visibility()
-
                 if user['role'] == 'admin':
                     self.controller.show_frame("AdminView")
                 else:
@@ -265,8 +280,6 @@ class LoginView(ctk.CTkFrame):
         log_action(username, "Failed login attempt.")
         messagebox.showerror("Login Failed", "Invalid username or password")
 
-
-# --- Admin View (MODIFIED) ---
 
 class AdminView(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -278,39 +291,37 @@ class AdminView(ctk.CTkFrame):
         self.line_fig = None
         self.line_canvas = None
         
-        # --- NEW: State for sorting user table ---
-        self.user_sort_column = "role" # Default sort column
-        self.user_sort_reverse = False  # Default sort direction
+        self.user_sort_column = "role"
+        self.user_sort_reverse = False
         
         font_normal = controller.font_normal
         font_bold = controller.font_bold
 
-        top_frame = ctk.CTkFrame(self, height=50, fg_color="transparent")
-        top_frame.pack(side="top", fill="x", padx=10, pady=10)
-        self.welcome_label = ctk.CTkLabel(top_frame, text="Admin Dashboard", font=font_bold)
-        self.welcome_label.pack(side="left")
-        logout_button = ctk.CTkButton(top_frame, text="Logout", command=controller.logout, width=100, font=font_normal)
-        logout_button.pack(side="right")
+        logout_button = ctk.CTkButton(self, text="Logout", command=controller.logout, width=100, font=font_normal)
+        logout_button.place(relx=0.98, rely=0.02, anchor="ne")
+        self.welcome_label = ctk.CTkLabel(self, text="Admin Dashboard", font=font_bold)
+        self.welcome_label.place(relx=0.02, rely=0.02, anchor="nw")
         
         self.tab_view = ctk.CTkTabview(self)
-        self.tab_view.pack(side="top", fill="both", expand=True, padx=10, pady=10)
-        self.tab_view._segmented_button.configure(font=font_normal) # Fixed position
+        self.tab_view.place(relx=0.5, rely=0.53, relwidth=0.98, relheight=0.88, anchor="center") 
+        self.tab_view._segmented_button.configure(font=font_normal)
         
         self.tab_view.add("Manage Users")
         self.tab_view.add("View Consumption")
+        self.tab_view.add("Billing")
         self.tab_view.add("Analytics") 
         self.tab_view.add("Action Log") 
 
         self.create_manage_users_tab(self.tab_view.tab("Manage Users"))
         self.create_view_consumption_tab(self.tab_view.tab("View Consumption"))
+        self.create_billing_tab(self.tab_view.tab("Billing"))
         self.create_analytics_tab(self.tab_view.tab("Analytics")) 
         self.create_log_tab(self.tab_view.tab("Action Log")) 
 
     def create_manage_users_tab(self, tab):
         font_normal = self.controller.font_normal
         add_frame = ctk.CTkFrame(tab)
-        add_frame.pack(side="top", fill="x", padx=10, pady=10)
-        
+        add_frame.pack(side="top", fill="x", padx=10, pady=5)
         ctk.CTkLabel(add_frame, text="Add New User:", font=font_normal).pack(side="left", padx=10)
         self.user_name_entry = ctk.CTkEntry(add_frame, placeholder_text="Full Name", font=font_normal)
         self.user_name_entry.pack(side="left", padx=5)
@@ -318,29 +329,34 @@ class AdminView(ctk.CTkFrame):
         self.user_user_entry.pack(side="left", padx=5)
         self.user_pass_entry = ctk.CTkEntry(add_frame, placeholder_text="Password", font=font_normal)
         self.user_pass_entry.pack(side="left", padx=5)
-        
         self.role_menu = ctk.CTkOptionMenu(add_frame, values=["client", "admin"], width=90, font=font_normal)
         self.role_menu.set("client")
         self.role_menu.pack(side="left", padx=5)
-        
         add_button = ctk.CTkButton(add_frame, text="Add User", width=100, command=self.add_user, font=font_normal)
         add_button.pack(side="left", padx=10)
         
+        search_frame = ctk.CTkFrame(tab)
+        search_frame.pack(side="top", fill="x", padx=10, pady=5)
+        self.user_search_entry = ctk.CTkEntry(search_frame, placeholder_text="Search by Name or Username...", 
+                                              font=font_normal, width=300)
+        self.user_search_entry.pack(side="left", padx=(5, 10))
+        search_button = ctk.CTkButton(search_frame, text="Search", width=80, 
+                                      font=font_normal, command=self.search_users)
+        search_button.pack(side="left", padx=5)
+        clear_button = ctk.CTkButton(search_frame, text="Clear", width=80, 
+                                     font=font_normal, command=self.clear_user_search)
+        clear_button.pack(side="left", padx=5)
+        
         list_frame = ctk.CTkFrame(tab)
         list_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
-        
         columns = ("id", "username", "full_name", "password", "role")
         self.user_tree = ttk.Treeview(list_frame, columns=columns, show="headings") 
-        
-        # --- MODIFIED: Loop to add headings and sort commands ---
         for col in columns:
-            col_text = col.replace("_", " ").title() # "full_name" -> "Full Name"
+            col_text = col.replace("_", " ").title()
             self.user_tree.heading(col, text=col_text, 
                                    command=lambda c=col: self.sort_user_table(c))
-
         self.user_tree.column("id", width=50)
         self.user_tree.column("role", width=70) 
-        
         self.user_tree.pack(side="left", fill="both", expand=True)
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.user_tree.yview)
         self.user_tree.configure(yscroll=scrollbar.set)
@@ -351,13 +367,19 @@ class AdminView(ctk.CTkFrame):
     def create_view_consumption_tab(self, tab):
         font_normal = self.controller.font_normal
         font_normal_bold = self.controller.font_normal_bold
+        
         top_frame = ctk.CTkFrame(tab)
         top_frame.pack(side="top", fill="x", padx=10, pady=10)
         ctk.CTkLabel(top_frame, text="Select Client:", font=font_normal).pack(side="left", padx=5)
-        self.client_select_menu = ctk.CTkOptionMenu(top_frame, values=["Loading..."], command=self.load_client_consumption, font=font_normal)
+        
+        self.client_select_menu = ctk.CTkComboBox(top_frame, values=["Loading..."], 
+                                                  command=self.load_client_consumption, 
+                                                  font=font_normal, width=200)
         self.client_select_menu.pack(side="left", padx=5)
+        
         self.total_label = ctk.CTkLabel(top_frame, text="Total All Consumption: ...", font=font_normal_bold)
         self.total_label.pack(side="right", padx=20)
+        
         cons_frame = ctk.CTkFrame(tab)
         cons_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
         cons_columns = ("month", "usage")
@@ -365,6 +387,7 @@ class AdminView(ctk.CTkFrame):
         self.cons_tree.heading("month", text="Month")
         self.cons_tree.heading("usage", text="Usage (kWh)")
         self.cons_tree.pack(fill="both", expand=True)
+        
         edit_frame = ctk.CTkFrame(tab)
         edit_frame.pack(side="bottom", fill="x", padx=10, pady=10) 
         ctk.CTkLabel(edit_frame, text="Add / Edit Usage:", font=font_normal_bold).pack(side="left", padx=(5, 10))
@@ -380,6 +403,39 @@ class AdminView(ctk.CTkFrame):
                                          command=self.save_client_usage)
         self.save_button.pack(side="left", padx=10)
 
+    def create_billing_tab(self, tab):
+        font_normal = self.controller.font_normal
+        font_normal_bold = self.controller.font_normal_bold
+        
+        top_bill_frame = ctk.CTkFrame(tab)
+        top_bill_frame.pack(side="top", fill="x", padx=10, pady=10)
+        
+        ctk.CTkLabel(top_bill_frame, text="Select Client:", font=font_normal_bold).pack(side="left", padx=5)
+        
+        self.bill_client_select_menu = ctk.CTkComboBox(top_bill_frame, values=["Loading..."], 
+                                                       font=font_normal, width=200,
+                                                       command=self.admin_bill_client_selected)
+        self.bill_client_select_menu.pack(side="left", padx=5)
+        
+        ctk.CTkLabel(top_bill_frame, text="Select Month:", font=font_normal_bold).pack(side="left", padx=10)
+        
+        self.bill_month_menu = ctk.CTkOptionMenu(top_bill_frame, values=["Select Client First"], font=font_normal,
+                                                  command=self.generate_admin_bill)
+        self.bill_month_menu.pack(side="left", padx=5)
+        
+        self.export_admin_bill_button = ctk.CTkButton(top_bill_frame, text="Export to .txt", 
+                                                      font=font_normal, width=120,
+                                                      command=self.export_admin_bill_to_txt)
+        self.export_admin_bill_button.pack(side="left", padx=(20, 5))
+        
+        bill_display_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        bill_display_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
+        
+        self.admin_bill_textbox = ctk.CTkTextbox(bill_display_frame, font=self.controller.font_normal, height=400, width=600)
+        self.admin_bill_textbox.pack(side="top", fill="both", expand=True)
+        self.admin_bill_textbox.insert("1.0", "Please select a client to see available months.")
+        self.admin_bill_textbox.configure(state="disabled")
+
     def create_analytics_tab(self, tab):
         font_normal_bold = self.controller.font_normal_bold
         tab.grid_columnconfigure(0, weight=1)
@@ -394,10 +450,8 @@ class AdminView(ctk.CTkFrame):
 
     def create_log_tab(self, tab):
         font_normal = self.controller.font_normal
-        
         log_frame = ctk.CTkFrame(tab)
         log_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
-
         log_columns = ("timestamp", "actor", "action")
         self.log_tree = ttk.Treeview(log_frame, columns=log_columns, show="headings")
         self.log_tree.heading("timestamp", text="Timestamp")
@@ -406,25 +460,115 @@ class AdminView(ctk.CTkFrame):
         self.log_tree.column("timestamp", width=160)
         self.log_tree.column("actor", width=120)
         self.log_tree.column("action", width=500)
-        
         self.log_tree.pack(side="left", fill="both", expand=True)
-        
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_tree.yview)
         self.log_tree.configure(yscroll=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        
         refresh_button = ctk.CTkButton(tab, text="Refresh Log", command=self.refresh_log_tab, font=font_normal)
         refresh_button.pack(side="bottom", pady=10)
+    
+    def generate_bill_text(self, kwh_units, month, user_name):
+        try:
+            bill_data, bill_details = calculate_mahadiscom_bill(kwh_units)
+            bill_text = f"--- ESTIMATED ELECTRICITY BILL ---\n\n"
+            bill_text += f"Client: {user_name}\n"
+            bill_text += f"Billing Month: {month}\n"
+            bill_text += f"Total Consumption: {kwh_units:.2f} kWh\n"
+            bill_text += "----------------------------------\n\n"
+            bill_text += "ITEMIZED CHARGES:\n\n"
+            bill_text += f"A. Energy Charges:\n"
+            bill_text += "\n".join(bill_details) + "\n"
+            bill_text += f"   Total Energy Charge:   ₹{bill_data['A_Energy_Charge']:>10.2f}\n\n"
+            bill_text += f"B. Fixed Charge:             ₹{bill_data['B_Fixed_Charge']:>10.2f}\n"
+            bill_text += f"C. Wheeling Charge:          ₹{bill_data['C_Wheeling_Charge']:>10.2f}\n"
+            bill_text += f"D. Fuel Adjustment (FAC):    ₹{bill_data['D_FAC']:>10.2f}\n"
+            bill_text += "----------------------------------\n"
+            sub_total = bill_data['A_Energy_Charge'] + bill_data['B_Fixed_Charge'] + bill_data['C_Wheeling_Charge'] + bill_data['D_FAC']
+            bill_text += f"   Sub-Total:               ₹{sub_total:>10.2f}\n"
+            bill_text += f"E. Electricity Duty (16%):   ₹{bill_data['E_Electricity_Duty']:>10.2f}\n\n"
+            bill_text += f"--- TOTAL BILL AMOUNT ---\n"
+            bill_text += f"   (A+B+C+D+E):             ₹{bill_data['F_Total_Bill']:>10.2f}\n"
+            bill_text += "----------------------------------\n"
+            bill_text += "\n\n--- APPLIED TARIFF (Residential LT-I) ---\n"
+            bill_text += f"Fixed Charge:      ₹{FIXED_CHARGE_SINGLE_PHASE:.2f}/month\n"
+            bill_text += f"Wheeling Charge:   ₹{WHEELING_CHARGE_PER_KWH:.2f}/kWh\n"
+            bill_text += f"Electricity Duty:  {ELECTRICITY_DUTY_RATE * 100:.0f}%\n"
+            bill_text += "Energy Charges (Telescopic Slabs):\n"
+            bill_text += f"  - 0-100 kWh:       ₹{slabs[0][1]:.2f}/unit\n"
+            bill_text += f"  - 101-300 kWh:     ₹{slabs[1][1]:.2f}/unit\n"
+            bill_text += f"  - 301-500 kWh:     ₹{slabs[2][1]:.2f}/unit\n"
+            bill_text += f"  - 501-1000 kWh:    ₹{slabs[3][1]:.2f}/unit\n"
+            bill_text += f"  - >1000 kWh:       ₹{slabs[4][1]:.2f}/unit\n"
+            return bill_text
+        except Exception as e:
+            return f"An error occurred during bill calculation: {e}"
+
+    def export_admin_bill_to_txt(self):
+        try:
+            client_name = self.bill_client_select_menu.get()
+            month = self.bill_month_menu.get()
+            if client_name == "Select Client" or month in ["Select Client First", "No Data"]:
+                messagebox.showerror("Error", "Cannot export. Please generate a valid bill first.")
+                return
+            text_to_save = self.admin_bill_textbox.get("1.0", "end-1c")
+            clean_client_name = client_name.replace(" ", "_")
+            filename = f"BILL_{clean_client_name}_{month}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(text_to_save)
+            log_action(self.controller.current_user_name, f"Exported bill for {client_name} ({month}).")
+            messagebox.showinfo("Success", f"Bill exported successfully to:\n{os.path.abspath(filename)}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"An error occurred: {e}")
+
+    def generate_admin_bill(self, selected_month):
+        self.admin_bill_textbox.configure(state="normal")
+        self.admin_bill_textbox.delete("1.0", "end")
+        try:
+            selected_client_name = self.bill_client_select_menu.get() 
+            if selected_client_name == "Select Client" or selected_month == "Select Month" or selected_month == "No Data":
+                self.admin_bill_textbox.insert("1.0", "Please select a client and a valid month.")
+                self.admin_bill_textbox.configure(state="disabled")
+                return
+            client_id = self.client_map[selected_client_name]
+            usage_df = db_query_to_df("SELECT usage_kwh FROM consumption WHERE user_id = ? AND month = ?", 
+                                      params=(client_id, selected_month))
+            if usage_df.empty:
+                self.admin_bill_textbox.insert("1.0", f"No consumption data found for {selected_client_name} for {selected_month}.")
+            else:
+                kwh_units = usage_df['usage_kwh'].iloc[0]
+                bill_text = self.generate_bill_text(kwh_units, selected_month, selected_client_name)
+                self.admin_bill_textbox.insert("1.0", bill_text)
+        except Exception as e:
+            self.admin_bill_textbox.insert("1.0", f"An error occurred: {e}")
+        self.admin_bill_textbox.configure(state="disabled")
+
+    def admin_bill_client_selected(self, selected_client_name):
+        self.admin_bill_textbox.configure(state="normal")
+        self.admin_bill_textbox.delete("1.0", "end")
+        if selected_client_name in self.client_map:
+            client_id = self.client_map[selected_client_name]
+            data_df = db_query_to_df("SELECT month FROM consumption WHERE user_id = ? ORDER BY month DESC", params=(client_id,))
+            available_months = list(data_df['month'])
+            if not available_months:
+                available_months = ["No Data"]
+                self.admin_bill_textbox.insert("1.0", f"No consumption data found for {selected_client_name}.")
+            else:
+                self.admin_bill_textbox.insert("1.0", f"Please select a month for {selected_client_name} to generate a bill.")
+            self.bill_month_menu.configure(values=available_months)
+            self.bill_month_menu.set(available_months[0])
+        else:
+            self.bill_month_menu.configure(values=["Select Client First"])
+            self.bill_month_menu.set("Select Client First")
+            self.admin_bill_textbox.insert("1.0", "Please select a client.")
+        self.admin_bill_textbox.configure(state="disabled")
 
     def refresh_pie_chart(self):
         if self.pie_canvas:
             self.pie_canvas.get_tk_widget().destroy()
         query = """
         SELECT u.full_name, SUM(c.usage_kwh) as total_usage
-        FROM consumption c
-        JOIN users u ON c.user_id = u.id
-        WHERE u.role = 'client'
-        GROUP BY u.full_name
+        FROM consumption c JOIN users u ON c.user_id = u.id
+        WHERE u.role = 'client' GROUP BY u.full_name
         """
         df = db_query_to_df(query)
         self.pie_fig = plt.Figure(figsize=(5, 4), dpi=100)
@@ -470,7 +614,6 @@ class AdminView(ctk.CTkFrame):
         username = self.user_user_entry.get()
         password = self.user_pass_entry.get()
         role = self.role_menu.get() 
-        
         if not name or not username or not password:
             messagebox.showerror("Error", "All fields are required.")
             return
@@ -480,7 +623,6 @@ class AdminView(ctk.CTkFrame):
                 (username, password, role, name)
             )
             log_action(self.controller.current_user_name, f"Added new user: '{username}' (Role: {role}).")
-            
             messagebox.showinfo("Success", f"User '{username}' added as {role}.")
             self.user_name_entry.delete(0, 'end')
             self.user_user_entry.delete(0, 'end')
@@ -496,21 +638,16 @@ class AdminView(ctk.CTkFrame):
         if not selected_item:
             messagebox.showerror("Error", "Please select a user to remove.")
             return
-            
         client_data = self.user_tree.item(selected_item)
         client_id = client_data['values'][0]
         client_name = client_data['values'][1]
-        
         if client_id == self.controller.current_user_id:
             messagebox.showerror("Error", "You cannot remove your own account.")
             return
-        
         if messagebox.askyesno("Confirm Delete", f"Are you sure you want to remove '{client_name}'? This will also delete all their consumption data."):
             try:
                 db_query("DELETE FROM users WHERE id = ?", (client_id,))
-                
                 log_action(self.controller.current_user_name, f"Removed user: '{client_name}' (ID: {client_id}).")
-                
                 messagebox.showinfo("Success", f"User '{client_name}' removed.")
                 self.refresh_data()
             except Exception as e:
@@ -521,8 +658,7 @@ class AdminView(ctk.CTkFrame):
         month = self.month_menu.get()
         year = self.year_entry.get()
         usage_str = self.usage_entry.get()
-        
-        if selected_client_name == "No Clients" or selected_client_name == "Loading...":
+        if selected_client_name == "No Clients" or selected_client_name == "Loading..." or selected_client_name == "Select Client":
             messagebox.showerror("Error", "Please select a client from the dropdown first.")
             return
         if month == "Month" or not year or not usage_str:
@@ -536,14 +672,11 @@ class AdminView(ctk.CTkFrame):
         if not (year.isdigit() and len(year) == 4):
             messagebox.showerror("Error", "Year must be a 4-digit number (e.g., 2025).")
             return
-
         try:
             client_id = self.client_map[selected_client_name]
             db_month = f"{year}-{month}"
-            
             find_query = "SELECT id FROM consumption WHERE user_id = ? AND month = ?"
             existing_record = db_query_to_df(find_query, params=(client_id, db_month))
-            
             if not existing_record.empty:
                 update_query = "UPDATE consumption SET usage_kwh = ? WHERE user_id = ? AND month = ?"
                 db_query(update_query, params=(usage_float, client_id, db_month))
@@ -554,46 +687,52 @@ class AdminView(ctk.CTkFrame):
                 db_query(insert_query, params=(client_id, db_month, usage_float))
                 log_action(self.controller.current_user_name, f"Added new usage for '{selected_client_name}' ({db_month}): {usage_float} kWh.")
                 messagebox.showinfo("Success", f"Usage added for {selected_client_name} for month {db_month}.")
-            
             self.year_entry.delete(0, 'end')
             self.usage_entry.delete(0, 'end')
             self.month_menu.set("Month")
             self.refresh_data() 
-            
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {e}")
 
-    # --- NEW FUNCTION ---
+    def search_users(self):
+        self.refresh_user_list()
+        
+    def clear_user_search(self):
+        self.user_search_entry.delete(0, 'end')
+        self.refresh_user_list()
+
     def sort_user_table(self, col):
-        """Sorts the user table by the clicked column."""
-        # Toggle reverse state if it's the same column
         if self.user_sort_column == col:
             self.user_sort_reverse = not self.user_sort_reverse
         else:
             self.user_sort_column = col
             self.user_sort_reverse = False
-            
-        # Refresh the list, which will now use the new sort state
         self.refresh_user_list()
             
     def refresh_user_list(self):
-        # --- MODIFIED ---
         for item in self.user_tree.get_children():
             self.user_tree.delete(item)
         
-        # Build the query dynamically based on the sort state
-        sort_direction = "DESC" if self.user_sort_reverse else "ASC"
-        # We know the column names are safe, so f-string is acceptable here
-        query = f"SELECT id, username, full_name, password, role FROM users ORDER BY {self.user_sort_column} {sort_direction}"
+        search_term = self.user_search_entry.get()
+        base_query = "SELECT id, username, full_name, password, role FROM users"
+        params = []
         
-        users_df = db_query_to_df(query)
+        if search_term:
+            base_query += " WHERE (username LIKE ? OR full_name LIKE ?)"
+            search_like = f"%{search_term}%"
+            params.extend([search_like, search_like])
+        
+        sort_direction = "DESC" if self.user_sort_reverse else "ASC"
+        base_query += f" ORDER BY {self.user_sort_column} {sort_direction}"
+        
+        users_df = db_query_to_df(base_query, params=params)
         for index, user in users_df.iterrows():
             self.user_tree.insert("", "end", values=tuple(user))
             
     def refresh_consumption_data(self):
         clients_df = db_query_to_df("SELECT id, full_name FROM users WHERE role = 'client' ORDER BY full_name")
         self.client_map = {name: uid for uid, name in clients_df.values} 
-        client_names = list(self.client_map.keys())
+        client_names = ["Select Client"] + list(self.client_map.keys())
         current_selection = self.client_select_menu.get()
         if not client_names:
             self.client_select_menu.configure(values=["No Clients"])
@@ -616,10 +755,19 @@ class AdminView(ctk.CTkFrame):
             for index, row in data_df.iterrows():
                 self.cons_tree.insert("", "end", values=tuple(row))
     
+    def refresh_admin_billing_tab_clients(self):
+        clients_df = db_query_to_df("SELECT id, full_name FROM users WHERE role = 'client' ORDER BY full_name")
+        self.client_map = {name: uid for uid, name in clients_df.values}
+        client_names = ["Select Client"] + list(self.client_map.keys())
+        
+        self.bill_client_select_menu.configure(values=client_names)
+        self.bill_client_select_menu.set("Select Client")
+        self.bill_month_menu.configure(values=["Select Client First"])
+        self.bill_month_menu.set("Select Client First")
+
     def refresh_log_tab(self):
         for item in self.log_tree.get_children():
             self.log_tree.delete(item)
-            
         log_df = db_query_to_df("SELECT timestamp, actor, action FROM action_log ORDER BY id DESC LIMIT 200")
         for index, log_entry in log_df.iterrows():
             self.log_tree.insert("", "end", values=tuple(log_entry))
@@ -631,11 +779,10 @@ class AdminView(ctk.CTkFrame):
     def refresh_data(self):
         self.welcome_label.configure(text=f"Welcome, {self.controller.current_user_name} (Admin)")
         self.refresh_user_list() 
-        self.refresh_consumption_data()
+        self.refresh_consumption_data() 
+        self.refresh_admin_billing_tab_clients() 
         self.update_charts() 
         self.refresh_log_tab() 
-
-# --- Client View (MODIFIED) ---
 
 class ClientView(ctk.CTkFrame):
     def __init__(self, parent, controller):
@@ -649,18 +796,17 @@ class ClientView(ctk.CTkFrame):
         font_bold = controller.font_bold
         font_normal_bold = controller.font_normal_bold
         
-        top_frame = ctk.CTkFrame(self, height=50, fg_color="transparent")
-        top_frame.pack(side="top", fill="x", padx=10, pady=10)
-        self.welcome_label = ctk.CTkLabel(top_frame, text="Client Dashboard", font=font_bold)
-        self.welcome_label.pack(side="left")
-        logout_button = ctk.CTkButton(top_frame, text="Logout", command=controller.logout, width=100, font=font_normal)
-        logout_button.pack(side="right")
+        logout_button = ctk.CTkButton(self, text="Logout", command=controller.logout, width=100, font=font_normal)
+        logout_button.place(relx=0.98, rely=0.02, anchor="ne")
+        self.welcome_label = ctk.CTkLabel(self, text="Client Dashboard", font=font_bold)
+        self.welcome_label.place(relx=0.02, rely=0.02, anchor="nw")
         
         self.tab_view = ctk.CTkTabview(self)
-        self.tab_view.pack(side="top", fill="both", expand=True, padx=10, pady=10)
-        self.tab_view._segmented_button.configure(font=font_normal) # Fixed position
+        self.tab_view.place(relx=0.5, rely=0.53, relwidth=0.98, relheight=0.88, anchor="center")
+        self.tab_view._segmented_button.configure(font=font_normal)
         
         self.tab_view.add("Monthly Table")
+        self.tab_view.add("Billing")
         self.tab_view.add("Usage Graph")
         
         table_tab = self.tab_view.tab("Monthly Table")
@@ -673,6 +819,28 @@ class ClientView(ctk.CTkFrame):
         self.cons_tree.heading("usage", text="Usage (kWh)")
         self.cons_tree.pack(fill="both", expand=True, padx=10, pady=10)
         
+        billing_tab = self.tab_view.tab("Billing")
+        bill_frame = ctk.CTkFrame(billing_tab, fg_color="transparent")
+        bill_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        client_bill_top = ctk.CTkFrame(bill_frame, fg_color="transparent")
+        client_bill_top.pack(side="top", fill="x", pady=(0, 10))
+        
+        ctk.CTkLabel(client_bill_top, text="Select Billing Month:", font=font_normal_bold).pack(side="left", padx=5)
+        
+        self.client_month_menu = ctk.CTkOptionMenu(client_bill_top, values=["No Data"], font=font_normal,
+                                                   command=self.generate_client_bill)
+        self.client_month_menu.pack(side="left", padx=5)
+        
+        self.export_client_bill_button = ctk.CTkButton(client_bill_top, text="Export to .txt",
+                                                       font=font_normal, width=120,
+                                                       command=self.export_client_bill_to_txt)
+        self.export_client_bill_button.pack(side="left", padx=(20, 5))
+        
+        self.client_bill_textbox = ctk.CTkTextbox(bill_frame, font=self.controller.font_normal)
+        self.client_bill_textbox.pack(fill="both", expand=True)
+        self.client_bill_textbox.configure(state="disabled")
+
         self.graph_frame = ctk.CTkFrame(self.tab_view.tab("Usage Graph"))
         self.graph_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
         ctk.CTkLabel(self.graph_frame, text="Your Personal Usage (kWh)", font=font_normal_bold).pack(pady=10)
@@ -680,29 +848,71 @@ class ClientView(ctk.CTkFrame):
     def refresh_client_table(self):
         for item in self.cons_tree.get_children():
             self.cons_tree.delete(item)
-        
         user_id = self.controller.current_user_id
         data_df = db_query_to_df("SELECT month, usage_kwh FROM consumption WHERE user_id = ? ORDER BY month DESC", params=(user_id,))
-        
         if data_df.empty:
             self.cons_tree.insert("", "end", values=("No consumption data found.", ""))
         else:
             for index, row in data_df.iterrows():
                 self.cons_tree.insert("", "end", values=tuple(row))
+    
+    def export_client_bill_to_txt(self):
+        try:
+            client_name = self.controller.current_user_name
+            month = self.client_month_menu.get()
+            if month == "No Data":
+                messagebox.showerror("Error", "Cannot export. No bill data available.")
+                return
+            text_to_save = self.client_bill_textbox.get("1.0", "end-1c")
+            clean_client_name = client_name.replace(" ", "_")
+            filename = f"BILL_{clean_client_name}_{month}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(text_to_save)
+            log_action(client_name, f"Exported their own bill ({month}).")
+            messagebox.showinfo("Success", f"Bill exported successfully to:\n{os.path.abspath(filename)}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"An error occurred: {e}")
+
+    def generate_client_bill(self, selected_month):
+        self.client_bill_textbox.configure(state="normal")
+        self.client_bill_textbox.delete("1.0", "end")
+        if selected_month == "No Data":
+            self.client_bill_textbox.insert("1.0", "No consumption data found to generate a bill.")
+            self.client_bill_textbox.configure(state="disabled")
+            return
+        user_id = self.controller.current_user_id
+        data_df = db_query_to_df("SELECT usage_kwh FROM consumption WHERE user_id = ? AND month = ?", params=(user_id, selected_month))
+        if data_df.empty:
+            self.client_bill_textbox.insert("1.0", f"Error: No data found for month {selected_month}.")
+        else:
+            kwh_units = data_df['usage_kwh'].iloc[0]
+            user_name = self.controller.current_user_name
+            bill_text = self.controller.frames["AdminView"].generate_bill_text(kwh_units, selected_month, user_name)
+            self.client_bill_textbox.insert("1.0", bill_text)
+        self.client_bill_textbox.configure(state="disabled")
+
+    def refresh_billing_tab(self):
+        user_id = self.controller.current_user_id
+        data_df = db_query_to_df("SELECT month FROM consumption WHERE user_id = ? ORDER BY month DESC", params=(user_id,))
+        available_months = list(data_df['month'])
+        if not available_months:
+            self.client_month_menu.configure(values=["No Data"])
+            self.client_month_menu.set("No Data")
+            self.generate_client_bill("No Data")
+        else:
+            self.client_month_menu.configure(values=available_months)
+            self.client_month_menu.set(available_months[0])
+            self.generate_client_bill(available_months[0])
                 
     def refresh_client_line_graph(self):
         if self.line_canvas:
             self.line_canvas.get_tk_widget().destroy()
-            
         user_id = self.controller.current_user_id
-        
         query = "SELECT month, usage_kwh FROM consumption WHERE user_id = ? ORDER BY month"
         df = db_query_to_df(query, params=(user_id,))
-        
         self.line_fig = plt.Figure(figsize=(5, 4), dpi=100)
         self.line_fig.set_facecolor(plt.rcParams['figure.facecolor'])
         ax = self.line_fig.add_subplot(111)
-        
         if df.empty:
             ax.text(0.5, 0.5, "No consumption data", horizontalalignment='center', verticalalignment='center', color=plt.rcParams['text.color'])
         else:
@@ -713,7 +923,6 @@ class ClientView(ctk.CTkFrame):
             for spine in ax.spines.values():
                 spine.set_edgecolor(plt.rcParams['axes.edgecolor'])
             self.line_fig.tight_layout() 
-        
         self.line_canvas = FigureCanvasTkAgg(self.line_fig, master=self.graph_frame)
         self.line_canvas.draw()
         self.line_canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
@@ -725,20 +934,15 @@ class ClientView(ctk.CTkFrame):
     def refresh_data(self):
         if not self.controller.current_user_id:
             return 
-            
         self.welcome_label.configure(text=f"Welcome, {self.controller.current_user_name}")
-        
         self.refresh_client_table()
+        self.refresh_billing_tab()
         self.refresh_client_line_graph()
 
-
-# --- Run the Application ---
 
 if __name__ == "__main__":
     ctk.set_default_color_theme("blue")
     
-    # Remember to delete 'electricity.db' for the new 'action_log'
-    # table to be created.
     setup_database()
     
     app = ElectricityPortalApp()
