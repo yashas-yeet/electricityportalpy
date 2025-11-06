@@ -3,6 +3,7 @@
 
 pip install customtkinter pandas matplotlib bcrypt openpyxl Faker
 
+pip install pandas openpyxl bcrypt faker
 
 
 
