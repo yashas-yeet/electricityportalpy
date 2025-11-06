@@ -1,10 +1,12 @@
-import sqlite3
-import getpass  # For securely typing passwords
-from datetime import datetime
-import sys
-import os
+import sqlite3  #for database
+import getpass  #for passwords
+from datetime import datetime #for clock and time
+import sys #for system tool which helps us to to exit the program
+import os #for exporting the bill and the showing file path and clearing the terminal screen every time we press enter
 
-# --- Billing Constants (Copied from your GUI app) ---
+#billing schematic taking from MAHA electricity board's tarrifs for an example tarrif set
+
+
 FIXED_CHARGE_SINGLE_PHASE = 115.00
 WHEELING_CHARGE_PER_KWH = 1.40
 FAC_PER_KWH = 0.00
@@ -13,14 +15,14 @@ slabs = [
     (100, 3.46), (200, 7.43), (200, 10.32), (500, 11.71), (float('inf'), 11.71)
 ]
 
-# --- Database & Logging Utilities ---
+#this part creates and connects to a database electricity.db and creates 3 tables, users, user consumption and action log
 
 def setup_database():
     """Creates the database tables if they don't exist."""
     conn = sqlite3.connect('electricity.db')
     cursor = conn.cursor()
     
-    # User table
+    #user table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +33,7 @@ def setup_database():
     )
     ''')
     
-    # Consumption table
+    #consumption table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS consumption (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +44,7 @@ def setup_database():
     )
     ''')
     
-    # Action Log Table
+    #action log table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS action_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +67,8 @@ def setup_database():
 
     conn.commit()
     conn.close()
+
+#this part of the code deals with the insert, delete, update functions of the database
 
 def db_execute(query, params=()):
     """For INSERT, UPDATE, DELETE queries."""
@@ -105,7 +109,7 @@ def wait_for_enter():
     """Pauses execution until the user presses Enter."""
     input("\nPress Enter to continue...")
 
-# --- Billing Logic (Copied from your GUI app) ---
+#billing logic
 
 def calculate_mahadiscom_bill(kwh_units):
     bill = {}
@@ -131,6 +135,9 @@ def calculate_mahadiscom_bill(kwh_units):
     bill['F_Total_Bill'] = sub_total + bill['E_Electricity_Duty']
     
     return bill, bill_details
+
+
+#printing the bill
 
 def generate_bill_text(kwh_units, month, user_name):
     try:
@@ -167,6 +174,9 @@ def generate_bill_text(kwh_units, month, user_name):
         return bill_text
     except Exception as e:
         return f"An error occurred during bill calculation: {e}"
+    
+    
+#exports the bill on user's demand
 
 def export_bill_to_txt(bill_text, client_name, month):
     try:
@@ -181,7 +191,8 @@ def export_bill_to_txt(bill_text, client_name, month):
     except Exception as e:
         print(f"\nError: Could not export bill. {e}")
 
-# --- Client Functions ---
+#client interface
+#consumption view
 
 def view_my_consumption(user_id):
     clear_screen()
@@ -199,7 +210,7 @@ def view_my_consumption(user_id):
         print(f"{row[0]:<10} | {row[1]:<12.2f}")
     
     wait_for_enter()
-
+#view usage
 def view_my_bill(user_id, user_name):
     clear_screen()
     print("--- View Your Bill ---")
@@ -242,7 +253,7 @@ def view_my_bill(user_id, user_name):
         print("Invalid choice.")
     
     wait_for_enter()
-
+#client loop, keeps showing the user info and breaks when pressed 3 aka exit
 def client_menu(user_session):
     user_id, user_name, user_role = user_session
     
@@ -264,8 +275,8 @@ def client_menu(user_session):
             print("Invalid choice. Please try again.")
             wait_for_enter()
 
-# --- Admin Functions ---
-
+#admin page
+#add user client/admin
 def add_user(admin_name):
     clear_screen()
     print("--- Add New User ---")
@@ -287,7 +298,7 @@ def add_user(admin_name):
             print("\nError: Username already exists.")
             
     wait_for_enter()
-
+# remove user, cant remove self
 def remove_user(admin_id, admin_name):
     clear_screen()
     print("--- Remove User ---")
@@ -325,7 +336,7 @@ def remove_user(admin_id, admin_name):
         print("\nError: Invalid ID. Please enter a number.")
     
     wait_for_enter()
-
+# searching and sorting
 def list_search_users(show_pass=True, allow_search=True, allow_sort=True):
     clear_screen()
     print("--- List All Users ---")
@@ -374,7 +385,7 @@ def list_search_users(show_pass=True, allow_search=True, allow_sort=True):
             
     if allow_search or allow_sort: # Only pause if it's the main function
         wait_for_enter()
-
+#lists the clients every interface for ease
 def _select_client_helper():
     """Helper to list and select a client. Returns (id, name) or None."""
     clients = db_fetch("SELECT id, username, full_name FROM users WHERE role = 'client' ORDER BY full_name")
@@ -400,7 +411,7 @@ def _select_client_helper():
     except ValueError:
         print("\nError: Invalid ID. Please enter a number.")
         return None
-
+# view consumption post selection of client
 def view_search_consumption():
     clear_screen()
     print("--- View Client's Consumption ---")
@@ -436,7 +447,7 @@ def view_search_consumption():
             print(f"{row[0]:<10} | {row[1]:<12.2f}")
             
     wait_for_enter()
-
+# edit consumption of client post selection
 def edit_consumption(admin_name):
     clear_screen()
     print("--- Add/Edit Client's Consumption ---")
@@ -480,7 +491,7 @@ def edit_consumption(admin_name):
         print(f"\nAn error occurred: {e}")
         
     wait_for_enter()
-
+# print bill post selection of client
 def admin_view_bill(admin_name):
     clear_screen()
     print("--- Generate Client Bill ---")
@@ -494,7 +505,7 @@ def admin_view_bill(admin_name):
     
     # Reuse the client's bill-viewing function
     view_my_bill(client_id, client_name)
-
+# view overall analytics
 def view_analytics():
     clear_screen()
     print("--- Portal Analytics ---")
@@ -531,7 +542,7 @@ def view_analytics():
             print(f"{row[0]:<10} | {row[1]:<15.2f}")
             
     wait_for_enter()
-
+#action log
 def view_log():
     clear_screen()
     print("--- Action Log (Most Recent 100) ---")
@@ -545,7 +556,7 @@ def view_log():
             print(f"{row[0]:<20} | {row[1]:<15} | {row[2]:<50}")
             
     wait_for_enter()
-
+# admin menu loop, keeps going on till 9 is pressed aka logout
 def admin_menu(admin_session):
     admin_id, admin_name, admin_role = admin_session
     
@@ -585,7 +596,7 @@ def admin_menu(admin_session):
             print("Invalid choice. Please try again.")
             wait_for_enter()
 
-# --- Main Login & Program Loop ---
+#Login page, loop till 2 is pressed
 
 def login():
     """Handles the login process. Returns (id, name, role) or None."""
@@ -608,7 +619,7 @@ def login():
         log_action(username, "Failed login attempt.")
         wait_for_enter()
         return None
-
+# calls all the functions 
 def main():
     """Main program loop."""
     setup_database()

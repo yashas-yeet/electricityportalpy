@@ -1,0 +1,73 @@
+import sqlite3
+import pandas as pd
+import os
+
+# --- Configuration ---
+DB_FILE = 'electricity.db'
+EXCEL_FILE = 'electricity_export.xlsx'
+# ---------------------
+
+def export_all_tables_to_excel():
+    """
+    Connects to the SQLite database, finds all tables,
+    and exports each table to a separate sheet in a single Excel file.
+    """
+    
+    # 1. Check if the database file exists
+    if not os.path.exists(DB_FILE):
+        print(f"Error: Database file not found at '{DB_FILE}'")
+        print("Please make sure this script is in the same folder as your database.")
+        return
+
+    print(f"Connecting to database: {DB_FILE}")
+    conn = None
+    
+    try:
+        # 2. Connect to the database
+        conn = sqlite3.connect(DB_FILE)
+        
+        # 3. Find all table names in the database
+        # We query the sqlite_master table to get a list of all tables
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        
+        # Extract table names from the list of tuples [('users',), ('consumption',)]
+        table_names = [table[0] for table in tables if not table[0].startswith('sqlite_')]
+        
+        if not table_names:
+            print("Error: No tables found in the database.")
+            return
+
+        print(f"Found tables: {', '.join(table_names)}")
+
+        # 4. Create an ExcelWriter object
+        # This is the "pen" that will write to our Excel file
+        with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl') as writer:
+            
+            # 5. Loop through each table and write it to a sheet
+            for table_name in table_names:
+                print(f"  -> Exporting '{table_name}' table...")
+                
+                # Read the entire table into a pandas DataFrame
+                df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+                
+                # Write the DataFrame to a new sheet in the Excel file
+                # The sheet will be named after the table
+                df.to_excel(writer, sheet_name=table_name, index=False)
+        
+        print("\n--- Success! ---")
+        print(f"All tables exported to: {os.path.abspath(EXCEL_FILE)}")
+
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
+        
+    finally:
+        # 6. Always close the database connection
+        if conn:
+            conn.close()
+            print("Database connection closed.")
+
+# --- Run the script ---
+if __name__ == "__main__":
+    export_all_tables_to_excel()
